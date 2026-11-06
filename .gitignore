@@ -1,0 +1,12 @@
+# Secrets
+api-key.txt
+*.pem
+
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
