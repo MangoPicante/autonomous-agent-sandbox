@@ -99,7 +99,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: ${{ runner.temp }}/agent/prompt.md
-          claude_args: "--model ${{ vars.AGENT_MODEL }} --max-turns 40 --allowedTools Edit,Write,Read,Glob,Grep,Bash(git add:*),Bash(git commit:*),Bash(pip install:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
+          claude_args: "--model ${{ vars.AGENT_MODEL }} --max-turns 40 --allowedTools Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(pip:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
           timeout_minutes: "18"
 
       - name: Detect blocked

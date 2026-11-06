@@ -2,7 +2,7 @@ name: agent-pr
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions: {}
 
@@ -11,26 +11,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  guard:
-    name: guard
+  classify:
+    name: classify
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 3
     outputs:
-      protected: ${{ steps.check.outputs.protected }}
-      protected_paths: ${{ steps.check.outputs.protected_paths }}
+      is_agent: ${{ steps.c.outputs.is_agent }}
+      protected: ${{ steps.c.outputs.protected }}
+      protected_paths: ${{ steps.c.outputs.protected_paths }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Guard protected paths
-        id: check
+      - name: Classify and guard
+        id: c
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IS_AGENT: ${{ contains(github.event.pull_request.labels.*.name, 'agent') }}
         run: |
           set -euo pipefail
+          echo "is_agent=${IS_AGENT}" >> "$GITHUB_OUTPUT"
+          if [ "$IS_AGENT" != "true" ]; then
+            echo "protected=false" >> "$GITHUB_OUTPUT"
+            echo "non-agent PR, skipping protected-path check"
+            exit 0
+          fi
           git fetch --no-tags --prune --depth=1 origin "$BASE_SHA" || true
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           violated=()
@@ -58,8 +66,8 @@ jobs:
 
   test:
     name: test
-    needs: guard
-    if: needs.guard.outputs.protected != 'true'
+    needs: classify
+    if: needs.classify.outputs.protected != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -80,7 +88,7 @@ jobs:
 
   review:
     name: review
-    needs: [guard, test]
+    needs: [classify, test]
     if: always() && (github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -92,14 +100,27 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      - name: Auto-approve non-agent PRs
+        if: needs.classify.outputs.is_agent != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/$REPO/statuses/$SHA" \
+            -f context=claude-review \
+            -f state=success \
+            -f description="non-agent PR; auto-approved"
+
       - name: Publish claude-review (protected-path short-circuit)
-        if: needs.guard.outputs.protected == 'true'
+        if: needs.classify.outputs.is_agent == 'true' && needs.classify.outputs.protected == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
-          PATHS: ${{ needs.guard.outputs.protected_paths }}
+          PATHS: ${{ needs.classify.outputs.protected_paths }}
         run: |
           set -euo pipefail
           gh api -X POST "repos/$REPO/statuses/$SHA" \
@@ -107,17 +128,16 @@ jobs:
             -f state=failure \
             -f description="Agent PRs may not modify protected paths"
           gh pr comment "$PR" --repo "$REPO" --body $'Agent PRs may not modify protected paths.\n\nOffending paths:\n```\n'"$PATHS"$'\n```'
-          exit 0
 
       - name: Checkout PR head
-        if: needs.guard.outputs.protected != 'true'
+        if: needs.classify.outputs.is_agent == 'true' && needs.classify.outputs.protected != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Prepare review context
-        if: needs.guard.outputs.protected != 'true'
+        if: needs.classify.outputs.is_agent == 'true' && needs.classify.outputs.protected != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -159,16 +179,16 @@ jobs:
           } > "$RUNNER_TEMP/review/prompt.md"
 
       - name: Run Claude Code (reviewer)
-        if: needs.guard.outputs.protected != 'true'
+        if: needs.classify.outputs.is_agent == 'true' && needs.classify.outputs.protected != 'true'
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: ${{ runner.temp }}/review/prompt.md
-          claude_args: "--model ${{ vars.REVIEW_MODEL }} --max-turns 25 --allowedTools Read,Glob,Grep,Write,Bash(cat:*),Bash(ls:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+          claude_args: "--model ${{ vars.REVIEW_MODEL }} --max-turns 25 --allowedTools Read,Glob,Grep,Write,Bash(cat:*),Bash(ls:*),Bash(git:*)"
           timeout_minutes: "13"
 
       - name: Publish claude-review
-        if: needs.guard.outputs.protected != 'true'
+        if: needs.classify.outputs.is_agent == 'true' && needs.classify.outputs.protected != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
@@ -234,12 +254,12 @@ jobs:
 
   fix:
     name: fix
-    needs: [guard, test, review]
+    needs: [classify, test, review]
     if: >
       always()
       && (github.event.pull_request.head.repo.full_name == github.repository)
-      && needs.guard.outputs.protected != 'true'
-      && contains(github.event.pull_request.labels.*.name, 'agent')
+      && needs.classify.outputs.is_agent == 'true'
+      && needs.classify.outputs.protected != 'true'
       && !contains(github.event.pull_request.labels.*.name, 'needs-human')
       && (needs.test.result != 'success' || needs.review.result != 'success')
     runs-on: ubuntu-latest
@@ -336,7 +356,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: ${{ runner.temp }}/fix/prompt.md
-          claude_args: "--model ${{ vars.AGENT_MODEL }} --max-turns 40 --allowedTools Edit,Write,Read,Glob,Grep,Bash(git add:*),Bash(git commit:*),Bash(pip install:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
+          claude_args: "--model ${{ vars.AGENT_MODEL }} --max-turns 40 --allowedTools Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(pip:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
           timeout_minutes: "18"
 
       - name: Detect blocked
