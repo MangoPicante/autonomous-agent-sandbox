@@ -184,7 +184,9 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: ${{ runner.temp }}/review/prompt.md
-          claude_args: "--model ${{ vars.REVIEW_MODEL }} --max-turns 25 --allowedTools Read,Glob,Grep,Write,Bash(cat:*),Bash(ls:*),Bash(git:*)"
+          model: ${{ vars.REVIEW_MODEL }}
+          max_turns: "25"
+          allowed_tools: "Read,Glob,Grep,Write,Bash(cat:*),Bash(ls:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
           timeout_minutes: "13"
 
       - name: Publish claude-review
@@ -356,7 +358,9 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: ${{ runner.temp }}/fix/prompt.md
-          claude_args: "--model ${{ vars.AGENT_MODEL }} --max-turns 40 --allowedTools Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(pip:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
+          model: ${{ vars.AGENT_MODEL }}
+          max_turns: "40"
+          allowed_tools: "Edit,Write,Read,Glob,Grep,Bash(git add:*),Bash(git commit:*),Bash(pip install:*),Bash(pytest:*),Bash(python:*),Bash(python3:*)"
           timeout_minutes: "18"
 
       - name: Detect blocked
